@@ -13,6 +13,7 @@ Or simply:
 """
 
 import argparse
+import copy
 import logging
 import sys
 import gc
@@ -51,11 +52,14 @@ class SpectrogramConfig:
             "colormap": "viridis",
             "colorbar": True,
             "title": "Real-time Audio Spectrogram & Waveform"
+        },
+        "plotfft": {
+            "alpha": 0.1
         }
     }
     
     def __init__(self, config_path: str = None):
-        self.config = self.DEFAULT_CONFIG.copy()
+        self.config = copy.deepcopy(self.DEFAULT_CONFIG)
         
         if config_path and Path(config_path).exists():
             self.load_from_file(config_path)
@@ -124,6 +128,19 @@ class SpectrogramConfig:
     def title(self) -> str:
         return self.config["plot"].get("title", "Real-time Audio Spectrogram")
 
+    @property
+    def plotfft_alpha(self) -> float:
+        alpha = self.config.get("plotfft", {}).get("alpha", 0.1)
+        try:
+            alpha = float(alpha)
+        except (TypeError, ValueError):
+            logging.warning(f"Invalid plotfft.alpha '{alpha}', using 0.1")
+            return 0.1
+        if not 0 < alpha <= 1:
+            logging.warning(f"plotfft.alpha must be in (0, 1], got {alpha}. Using 0.1")
+            return 0.1
+        return alpha
+
 
 class AudioSpectrogram:
     """Real-time audio spectrogram + waveform visualization."""
@@ -153,13 +170,24 @@ class AudioSpectrogram:
         # Track min/max for auto-scaling
         self.db_min = -60
         self.db_max = 0
+
+        # FFT plot state
+        self.current_fft_magnitude = np.zeros(len(self.freqs_limited))
+        self.smoothed_fft_magnitude = np.zeros(len(self.freqs_limited))
+        self.peak_frequency_hz = None
+        self.peak_magnitude = None
         
         # Matplotlib components
         self.fig = None
+        self.fig_fft = None
         self.ax_spec = None
         self.ax_wave = None
+        self.ax_fft = None
         self.image = None
         self.wave_line = None
+        self.fft_line = None
+        self.fft_smooth_line = None
+        self.peak_marker = None
         self.animation = None
     
     def _get_window_function(self) -> np.ndarray:
@@ -211,6 +239,20 @@ class AudioSpectrogram:
         
         # Limit to frequency range and store
         freq_mask = self.freqs <= self.config.frequency_limit
+        limited_magnitude = magnitude[freq_mask]
+        self.current_fft_magnitude = limited_magnitude
+        self.smoothed_fft_magnitude = (
+            self.config.plotfft_alpha * limited_magnitude
+            + (1 - self.config.plotfft_alpha) * self.smoothed_fft_magnitude
+        )
+
+        if len(limited_magnitude) > 0:
+            peak_index = int(np.argmax(limited_magnitude))
+            self.peak_frequency_hz = float(self.freqs_limited[peak_index])
+            self.peak_magnitude = float(limited_magnitude[peak_index])
+        else:
+            self.peak_frequency_hz = None
+            self.peak_magnitude = None
         
         # Shift history and add new frame at the end
         self.spectrogram_history = np.roll(self.spectrogram_history, -1, axis=0)
@@ -222,10 +264,11 @@ class AudioSpectrogram:
         self.db_max = np.percentile(recent_dbs, 95) + 10
     
     def _init_plot(self):
-        """Initialize the matplotlib plot with two subplots."""
+        """Initialize the matplotlib plots."""
         # Create figure with two subplots (spectrogram on top, waveform below)
         self.fig, (self.ax_spec, self.ax_wave) = plt.subplots(2, 1, figsize=(12, 8))
         self.fig.canvas.manager.set_window_title("Audio Spectrogram & Waveform")
+        self.fig.canvas.mpl_connect('close_event', self._on_figure_close)
         
         # ====== Spectrogram subplot ======
         extent = [0, self.config.frequency_limit / 1000, 0, self.HISTORY_FRAMES]
@@ -266,9 +309,53 @@ class AudioSpectrogram:
         self.ax_wave.grid(True, alpha=0.3)
         
         plt.tight_layout()
+
+        # Create a second figure for the FFT magnitude view.
+        self.fig_fft, self.ax_fft = plt.subplots(figsize=(12, 4.5))
+        self.fig_fft.canvas.manager.set_window_title("FFT Magnitude")
+        self.fig_fft.canvas.mpl_connect('close_event', self._on_figure_close)
+
+        self.fft_line, = self.ax_fft.plot(
+            self.freqs_limited,
+            self.current_fft_magnitude,
+            color='tab:orange',
+            linewidth=1.0,
+            label='FFT magnitude'
+        )
+        self.fft_smooth_line, = self.ax_fft.plot(
+            self.freqs_limited,
+            self.smoothed_fft_magnitude,
+            color='tab:green',
+            linewidth=1.5,
+            label=f'Smoothed magnitude (alpha={self.config.plotfft_alpha:.2f})'
+        )
+        self.peak_marker, = self.ax_fft.plot(
+            [],
+            [],
+            marker='o',
+            linestyle='None',
+            color='tab:red',
+            markersize=3,
+            label='Peak frequency'
+        )
+
+        self.ax_fft.set_xlim(0, self.config.frequency_limit)
+        self.ax_fft.set_ylim(0, 1)
+        self.ax_fft.set_xlabel('Frequency (Hz)')
+        self.ax_fft.set_ylabel('Magnitude')
+        self.ax_fft.set_title('FFT Magnitude')
+        self.ax_fft.grid(True, alpha=0.3)
+        self.ax_fft.legend(loc='upper right')
+        self.fig_fft.tight_layout()
+
+    def _on_figure_close(self, event):
+        """Stop the application if either figure is closed."""
+        if self.running:
+            self.stop()
+            plt.close('all')
     
     def _update_plot(self, frame):
-        """Update both plots - called by FuncAnimation."""
+        """Update all plots - called by FuncAnimation."""
         if not self.running:
             return self.image, self.wave_line
         
@@ -286,6 +373,25 @@ class AudioSpectrogram:
             max_val = np.max(np.abs(audio_array))
             if max_val > 100:  # Only scale if there's actual signal
                 self.ax_wave.set_ylim(-max_val * 1.2, max_val * 1.2)
+
+        # ====== Update FFT magnitude figure ======
+        self.fft_line.set_data(self.freqs_limited, self.current_fft_magnitude)
+        self.fft_smooth_line.set_data(self.freqs_limited, self.smoothed_fft_magnitude)
+
+        raw_fft_max = float(np.max(self.current_fft_magnitude)) if len(self.current_fft_magnitude) > 0 else 0.0
+        smooth_fft_max = float(np.max(self.smoothed_fft_magnitude)) if len(self.smoothed_fft_magnitude) > 0 else 0.0
+        fft_max = max(raw_fft_max, smooth_fft_max)
+        self.ax_fft.set_ylim(0, max(fft_max * 1.1, 1.0))
+
+        if self.peak_frequency_hz is not None and self.peak_magnitude is not None:
+            self.peak_marker.set_data([self.peak_frequency_hz], [self.peak_magnitude])
+            self.ax_fft.set_title(f'FFT Magnitude (Peak: {self.peak_frequency_hz:.1f} Hz)')
+        else:
+            self.peak_marker.set_data([], [])
+            self.ax_fft.set_title('FFT Magnitude')
+
+        if self.fig_fft is not None:
+            self.fig_fft.canvas.draw_idle()
         
         return self.image, self.wave_line
     

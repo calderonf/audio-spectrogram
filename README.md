@@ -1,11 +1,12 @@
 # Audio Spectrogram
 
-A real-time audio spectrogram visualizer that captures microphone input, converts it to mono, and displays a live spectrogram using Matplotlib.
+A real-time audio spectrogram visualizer that captures microphone input, converts it to mono, and displays a live spectrogram, waveform, and live FFT magnitude view using Matplotlib.
 
 ## Features
 
 - **Real-time spectrogram** — Live FFT visualization of microphone input (64 time frames)
 - **Live waveform** — Time-domain plot showing raw audio signal
+- **Live FFT magnitude plot** — Raw and smoothed FFT magnitude curves with peak frequency marker
 - **Mono conversion** — Automatically mixes stereo to mono
 - **Configurable** — YAML-based configuration for all parameters
 - **Auto-scaling** — Dynamic dB range adapts to audio levels
@@ -21,6 +22,7 @@ A real-time audio spectrogram visualizer that captures microphone input, convert
 
 1. Clone or download this repository:
    ```bash
+   git clone https://github.com/calderonf/audio-spectrogram.git
    cd audio-spectrogram
    ```
 
@@ -48,9 +50,13 @@ Edit `config.yaml` to customize the spectrogram behavior:
 | spectrogram | fft_window | FFT window size in samples |
 | spectrogram | hop_length | Hop length for STFT overlap |
 | spectrogram | window_function | Window type: hann, hamming, blackman, bartlett |
+| spectrogram | frequency_limit | Upper frequency limit used by the spectrogram and FFT magnitude plot |
 | plot | refresh_rate | Plot update frequency in Hz |
 | plot | colormap | Matplotlib colormap name |
 | plot | colorbar | Show/hide amplitude colorbar |
+| plotfft | alpha | Exponential smoothing factor for the FFT magnitude view (recommended starting value: 0.1) |
+
+The FFT magnitude figure uses `spectrogram.frequency_limit` to limit the displayed frequency range and `plotfft.alpha` to smooth the FFT curve over time.
 
 ## Usage
 
