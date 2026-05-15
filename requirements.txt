@@ -1,0 +1,16 @@
+# Audio Spectrogram Dependencies
+
+# Core audio handling
+sounddevice>=0.4.6
+
+# Numerical computing
+numpy>=1.21.0
+
+# Visualization
+matplotlib>=3.5.0
+
+# Configuration file parsing
+PyYAML>=6.0
+
+# Optional: for better performance (recommended)
+scipy>=1.9.0

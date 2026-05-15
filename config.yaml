@@ -1,0 +1,18 @@
+# Audio Spectrogram Configuration
+audio:
+  sample_rate: 44100          # Standard CD quality sample rate
+  chunk_size: 2048            # Samples per buffer (also used as FFT window size)
+  channels: 1                 # Mono input
+  dtype: "int16"              # Standard bit depth (16-bit)
+
+spectrogram:
+  fft_window: 2048            # Window size for FFT analysis
+  hop_length: 512             # Overlap between windows (fft_window // 4)
+  window_function: "hann"     # Hann window by default
+  frequency_limit: 22050      # Max frequency to display (sample_rate / 2)
+  
+plot:
+  refresh_rate: 30            # Frames per second for the plot
+  colormap: "viridis"         # Color scheme for spectrogram
+  colorbar: true              # Show amplitude colorbar
+  title: "Real-time Audio Spectrogram"
