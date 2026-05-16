@@ -41,8 +41,8 @@ class SpectrogramConfig:
             "dtype": "int16"
         },
         "spectrogram": {
-            "fft_window": 2048,
-            "hop_length": 512,
+            "fft_window": 4096,
+            "overlap_percent": 25.0,
             "window_function": "hann",
             "frequency_limit": 22050
         },
@@ -118,7 +118,71 @@ class SpectrogramConfig:
     
     @property
     def hop_length(self) -> int:
-        return self.config["spectrogram"].get("hop_length", self.fft_window // 4)
+        overlap_ratio = self.overlap_percent / 100.0
+        hop = int(round(self.fft_window * (1.0 - overlap_ratio)))
+        return min(max(hop, 1), self.fft_window)
+
+    @property
+    def overlap_percent(self) -> float:
+        spectrogram_config = self.config["spectrogram"]
+        overlap_percent = spectrogram_config.get("overlap_percent")
+        legacy_hop = spectrogram_config.get("hop_length")
+
+        if overlap_percent is not None:
+            if legacy_hop is not None:
+                try:
+                    derived_legacy_overlap = 100.0 * (1.0 - int(legacy_hop) / float(self.fft_window))
+                    validated_overlap = self._validate_overlap_percent(overlap_percent)
+                    if abs(validated_overlap - derived_legacy_overlap) > 1e-6:
+                        logging.warning(
+                            "Both spectrogram.overlap_percent and legacy spectrogram.hop_length are set "
+                            "with different values. Using spectrogram.overlap_percent."
+                        )
+                except (TypeError, ValueError):
+                    logging.warning(
+                        "Ignoring invalid legacy spectrogram.hop_length because "
+                        "spectrogram.overlap_percent is set."
+                    )
+            return self._validate_overlap_percent(overlap_percent)
+
+        if legacy_hop is not None:
+            try:
+                legacy_hop = int(legacy_hop)
+            except (TypeError, ValueError):
+                logging.warning(
+                    f"Invalid legacy spectrogram.hop_length '{legacy_hop}', using default overlap_percent 25.0"
+                )
+                return 25.0
+
+            if legacy_hop <= 0:
+                logging.warning(f"Legacy spectrogram.hop_length must be > 0, got {legacy_hop}. Using 1.")
+                legacy_hop = 1
+            if legacy_hop > self.fft_window:
+                logging.warning(
+                    f"Legacy spectrogram.hop_length ({legacy_hop}) is larger than fft_window "
+                    f"({self.fft_window}). Using fft_window instead."
+                )
+                legacy_hop = self.fft_window
+            return 100.0 * (1.0 - legacy_hop / float(self.fft_window))
+
+        return 25.0
+
+    def _validate_overlap_percent(self, overlap_percent) -> float:
+        try:
+            overlap_percent = float(overlap_percent)
+        except (TypeError, ValueError):
+            logging.warning(
+                f"Invalid spectrogram.overlap_percent '{overlap_percent}', using default 25.0"
+            )
+            return 25.0
+
+        if overlap_percent < 0 or overlap_percent >= 100:
+            logging.warning(
+                f"spectrogram.overlap_percent must be in [0, 100), got {overlap_percent}. Using 25.0"
+            )
+            return 25.0
+
+        return overlap_percent
     
     @property
     def window_function(self) -> str:
@@ -149,9 +213,25 @@ class SpectrogramConfig:
         return self.hop_length / float(self.sample_rate)
 
     @property
+    def overlap_samples(self) -> int:
+        return self.fft_window - self.hop_length
+
+    @property
+    def overlap_ratio(self) -> float:
+        return self.overlap_percent / 100.0
+
+    @property
     def visible_frequency_bins(self) -> int:
         freqs = np.fft.rfftfreq(self.fft_window, 1.0 / self.sample_rate)
         return int(np.count_nonzero(freqs <= self.effective_frequency_limit))
+
+    @property
+    def spectrogram_history_duration_s(self) -> float:
+        return self.hop_duration_s * self.visible_history_frames
+
+    @property
+    def visible_history_frames(self) -> int:
+        return AudioSpectrogram.HISTORY_FRAMES
     
     @property
     def refresh_rate(self) -> float:
@@ -203,6 +283,9 @@ class AudioSpectrogram:
         
         # Spectrogram history (rows = time, columns = frequency bins)
         self.spectrogram_history = np.zeros((self.HISTORY_FRAMES, len(self.freqs_limited)))
+
+        # Rolling buffer used to build overlapping FFT windows.
+        self.analysis_buffer = deque(maxlen=self.config.fft_window)
         
         # Waveform buffer - store more samples for visualization
         self.waveform_samples = 44100 // 2  # Show ~0.5 seconds of audio
@@ -262,14 +345,14 @@ class AudioSpectrogram:
         for sample in mono:
             self.audio_buffer.append(sample)
         
-        # Compute magnitude spectrum for this chunk
-        windowed_data = mono * self.window
-        
-        # Zero-padding to match fft_window if needed (for final incomplete frame)
-        if len(windowed_data) < self.config.fft_window:
-            padded = np.zeros(self.config.fft_window)
-            padded[:len(windowed_data)] = windowed_data
-            windowed_data = padded
+        # Add to FFT analysis buffer. A new FFT is computed every hop_length samples,
+        # using the most recent fft_window samples.
+        self.analysis_buffer.extend(mono)
+
+        if len(self.analysis_buffer) < self.config.fft_window:
+            return
+
+        windowed_data = np.asarray(self.analysis_buffer, dtype=np.float64) * self.window
         
         # Compute FFT
         fft_result = np.fft.rfft(windowed_data)
@@ -312,7 +395,12 @@ class AudioSpectrogram:
         self.fig.canvas.mpl_connect('close_event', self._on_figure_close)
         
         # ====== Spectrogram subplot ======
-        extent = [0, self.config.frequency_limit / 1000, 0, self.HISTORY_FRAMES]
+        extent = [
+            0,
+            self.config.effective_frequency_limit / 1000,
+            0,
+            self.config.spectrogram_history_duration_s,
+        ]
         
         self.image = self.ax_spec.imshow(
             self.spectrogram_history,
@@ -330,7 +418,7 @@ class AudioSpectrogram:
             cbar.set_label('Amplitude (dB)')
         
         self.ax_spec.set_xlabel('Frequency (kHz)')
-        self.ax_spec.set_ylabel('Time frame')
+        self.ax_spec.set_ylabel('Time (s)')
         self.ax_spec.set_title('Spectrogram')
         
         # ====== Waveform subplot ======
@@ -479,7 +567,7 @@ class AudioSpectrogram:
                 samplerate=self.config.sample_rate,
                 channels=self.config.channels,
                 dtype=self.config.dtype,
-                blocksize=self.config.chunk_size,
+                blocksize=self.config.hop_length,
                 callback=self._audio_callback
             ):
                 plt.show()
@@ -496,7 +584,10 @@ class AudioSpectrogram:
         """Stop the spectrogram and clean up."""
         self.running = False
         if self.animation is not None:
-            self.animation.event_source.stop()
+            event_source = getattr(self.animation, "event_source", None)
+            if event_source is not None:
+                event_source.stop()
+        self.animation = None
 
 
 def setup_logging(verbose: bool = False):
@@ -568,8 +659,9 @@ Examples:
     print("=" * 50)
     print("Audio Spectrogram Configuration:")
     print(f"  Sample Rate: {config.sample_rate} Hz")
-    print(f"  FFT / Stream Window: {config.fft_window}")
-    print(f"  Hop Length: {config.hop_length}")
+    print(f"  FFT Window: {config.fft_window} samples")
+    print(f"  Overlap Percent: {config.overlap_percent:.2f}%")
+    print(f"  Hop Length / Update Step: {config.hop_length} samples")
     print(f"  Window Function: {config.window_function}")
     print(f"  Display Frequency Limit: {config.frequency_limit} Hz")
     print("-" * 50)
@@ -577,12 +669,17 @@ Examples:
     print(f"  Nyquist Frequency: {config.nyquist_hz:.2f} Hz")
     print(f"  FFT Bin Spacing: {config.frequency_resolution_hz:.4f} Hz/bin")
     print(f"  FFT Window Duration: {config.window_duration_s:.4f} s")
-    print(f"  Spectrogram Time Step (hop): {config.hop_duration_s:.4f} s")
+    print(f"  Spectrogram Time Step (derived hop): {config.hop_duration_s:.4f} s")
+    print(f"  Overlap Between Windows: {config.overlap_samples} samples ({config.overlap_ratio * 100:.2f}%)")
     print(f"  Effective Display Limit: {config.effective_frequency_limit:.2f} Hz")
     print(f"  Visible FFT Bins: {config.visible_frequency_bins}")
     print(
         "  Note: lowering frequency_limit zooms into fewer bins for easier inspection, "
         "but the true frequency resolution stays fixed at sample_rate / fft_window."
+    )
+    print(
+        "  Note: overlap_percent changes how often a new FFT slice is computed. "
+        "Higher overlap means smaller derived hop_length and smoother time evolution."
     )
     print("=" * 50)
     

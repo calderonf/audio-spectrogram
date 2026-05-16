@@ -47,7 +47,7 @@ Edit `config.yaml` to customize the spectrogram behavior:
 | audio | channels | Number of input channels (1 = mono) |
 | audio | dtype | Audio data type (default: int16) |
 | spectrogram | fft_window | Stream block size and FFT window size in samples |
-| spectrogram | hop_length | Hop length for STFT overlap |
+| spectrogram | overlap_percent | Overlap percentage between consecutive FFT windows |
 | spectrogram | window_function | Window type: hann, hamming, blackman, bartlett |
 | spectrogram | frequency_limit | Upper frequency limit used by the spectrogram and FFT magnitude plot |
 | plot | refresh_rate | Plot update frequency in Hz |
@@ -56,7 +56,7 @@ Edit `config.yaml` to customize the spectrogram behavior:
 | plotfft | alpha | Exponential smoothing factor for the FFT magnitude view (recommended starting value: 0.1) |
 
 The FFT magnitude figure uses `spectrogram.frequency_limit` to limit the displayed frequency range and `plotfft.alpha` to smooth the FFT curve over time.
-`spectrogram.fft_window` is now the single source of truth for both the audio block size and the FFT analysis window. Older configs that still use `audio.chunk_size` remain supported as a legacy alias.
+`spectrogram.fft_window` is the single source of truth for both the audio block size and the FFT analysis window, while `spectrogram.overlap_percent` controls how much of each FFT window is reused in the next update. Older configs that still use `audio.chunk_size` or `spectrogram.hop_length` remain supported as legacy aliases.
 
 ## Usage
 

@@ -7,16 +7,31 @@
 # Practical guide:
 # - A larger fft_window improves frequency detail but reacts more slowly in time.
 # - A smaller fft_window reacts faster but separates nearby tones less precisely.
+# - A larger overlap_percent means more overlap between consecutive FFT windows,
+#   so the spectrogram updates more smoothly in time.
+# - A smaller overlap_percent means a larger hop between windows, lower CPU usage,
+#   and coarser time updates.
 # - frequency_limit does NOT improve the true FFT resolution by itself.
 #   It only limits the displayed band, so the same FFT bins are shown in a narrower range.
 # - True frequency resolution is:
 #     frequency_resolution_hz = sample_rate / fft_window
+# - True spectrogram time step is:
+#     hop_time_s = derived_hop_length / sample_rate
+# - Overlap between consecutive windows is:
+#     overlap_samples = fft_window * overlap_percent / 100
+#     overlap_ratio = overlap_percent / 100
+# - Derived hop length is:
+#     derived_hop_length = fft_window * (1 - overlap_percent / 100)
 # - Visible bins in the plots are approximately:
 #     visible_bins ~= floor(frequency_limit / frequency_resolution_hz) + 1
-# - Example with sample_rate=44100 and fft_window=32768:
-#     resolution ~= 1.35 Hz/bin
-#   If frequency_limit=8000, the plots show only the bins from 0 to 8000 Hz,
-#   which makes low and mid frequencies easier to inspect visually.
+# - Default setup in this file:
+#     sample_rate=44100, fft_window=4096, overlap_percent=25.0, frequency_limit=22050
+#     frequency_resolution ~= 10.77 Hz/bin
+#     window_duration ~= 92.88 ms
+#     hop_time ~= 69.66 ms
+#     overlap = 1024 samples = 25.0%
+#   This default gives a good balance: full audible-band view, clear FFT peaks,
+#   and a spectrogram that updates with lighter overlap and lower compute cost.
 
 audio:
   # sample_rate:
@@ -27,7 +42,7 @@ audio:
   #   - Higher sample_rate lets you inspect higher frequencies.
   #   - For a fixed fft_window, higher sample_rate makes each FFT bin wider in Hz
   #     (lower frequency detail unless you also increase fft_window).
-  sample_rate: 8000
+  sample_rate: 44100
 
   # channels:
   #   Number of channels requested from the input device.
@@ -52,10 +67,10 @@ audio:
 spectrogram:
   # fft_window:
   #   Main analysis size in samples.
-  #   This is both:
-  #   - the audio block size captured per callback
-  #   - the FFT window size used for the spectrogram and FFT plot
-  #   Recommended values: powers of two such as 1024, 2048 (Default), 4096, 8192, 16384, 32768.
+  #   This is the length of each FFT analysis window used by:
+  #   - the spectrogram
+  #   - the FFT magnitude plot
+  #   Recommended values: powers of two such as 1024, 2048, 4096 (Default), 8192, 16384, 32768.
   #   Visual effect:
   #   - Larger values:
   #     better frequency resolution, smoother and more precise peaks in frequency,
@@ -66,18 +81,45 @@ spectrogram:
   #   Key formulas:
   #   - frequency_resolution_hz = sample_rate / fft_window
   #   - window_duration_s = fft_window / sample_rate
-  fft_window: 16384
+  #   With the defaults here:
+  #   - 4096 samples at 44100 Hz = 92.88 ms of audio per FFT
+  #   - frequency resolution is about 10.77 Hz per bin
+  fft_window: 4096
 
-  # hop_length:
-  #   Intended horizontal time step between consecutive FFT slices.
-  #   Typical values: fft_window / 2, fft_window / 4, fft_window / 8.
+  # overlap_percent:
+  #   Percentage of the FFT window that is reused in the next analysis window.
+  #   Another way to read it:
+  #   - fft_window sets how much audio each FFT analyzes
+  #   - overlap_percent sets how much of that window is kept for the next update
+  #   - the app derives hop_length internally from this percentage
+  #   Default here:
+  #   - overlap_percent = 25.0%
+  #   - overlap = 1024 samples
+  #   - derived hop_length = 3072 samples
+  #   Reference calculations for fft_window=4096 at sample_rate=44100:
+  #   - 12.5% overlap -> 512 overlap samples, 3584 derived hop samples, 81.27 ms step
+  #   - 25.0% overlap -> 1024 overlap samples, 3072 derived hop samples, 69.66 ms step (Default)
+  #   - 50.0% overlap -> 2048 overlap samples, 2048 derived hop samples, 46.44 ms step
+  #   - 75.0% overlap -> 3072 overlap samples, 1024 derived hop samples, 23.22 ms step
+  #   - 87.5% overlap -> 3584 overlap samples, 512 derived hop samples, 11.61 ms step
   #   Visual effect:
-  #   - Smaller hop_length means more overlap, denser time sampling, and smoother motion.
-  #   - Larger hop_length means less overlap and coarser time updates.
-  #   Note:
-  #   - In the current implementation the stream callback still arrives in full fft_window blocks,
-  #     so this value mainly documents the desired spectrogram time step and is reported in console.
-  hop_length: 512
+  #   - Larger overlap_percent:
+  #     more overlap, more frequent spectrogram columns, smoother time evolution,
+  #     and better visibility of short events, at the cost of more computation.
+  #   - Smaller overlap_percent:
+  #     less overlap, fewer updates, less CPU use, but more "jumping" in time.
+  #   Important:
+  #   - overlap_percent does NOT change the frequency resolution.
+  #   - overlap_percent only changes the temporal spacing between FFT slices.
+  #   - Frequency resolution still depends on fft_window.
+  #   With the defaults here:
+  #   - overlap_percent = 25.0%
+  #   - derived hop_length = 3072 samples = 69.66 ms between FFT updates
+  #   - overlap = 1024 samples
+  #   - overlap ratio = 25.0%
+  #   This default favors lower overlap and lower compute cost, while still keeping
+  #   enough continuity to follow broad spectral changes in real time.
+  overlap_percent: 25.0
 
   # window_function:
   #   Taper applied before the FFT to reduce spectral leakage.
@@ -105,7 +147,7 @@ spectrogram:
   #   - The real resolution still depends on fft_window.
   #   - Lowering frequency_limit can make the same bins easier to read visually
   #     because the figure focuses on a narrower band.
-  frequency_limit: 8000
+  frequency_limit: 22050
 
 plot:
   # refresh_rate:
@@ -130,7 +172,7 @@ plot:
 
   # colorbar:
   #   Whether to show the amplitude color scale next to the spectrogram.
-  #   Allowed values: true, false
+  #   Allowed values: true (Default), false
   #   Visual effect:
   #   - true: easier to interpret amplitude levels in dB.(Default)
   #   - false: cleaner layout with a bit more room for the plot itself.
@@ -150,4 +192,4 @@ plotfft:
   #   - alpha near 1.0: the smoothed curve follows the current FFT almost immediately.
   #   - alpha near 0.1: slower, steadier curve that highlights trends. (Default)
   #   - alpha very small: strong smoothing, but peaks may lag behind fast changes.
-  alpha: 0.05
+  alpha: 0.1
