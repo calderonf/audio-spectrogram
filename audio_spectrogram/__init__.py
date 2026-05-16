@@ -37,7 +37,6 @@ class SpectrogramConfig:
     DEFAULT_CONFIG = {
         "audio": {
             "sample_rate": 44100,
-            "chunk_size": 2048,
             "channels": 1,
             "dtype": "int16"
         },
@@ -86,7 +85,8 @@ class SpectrogramConfig:
     
     @property
     def chunk_size(self) -> int:
-        return self.config["audio"]["chunk_size"]
+        # Legacy alias kept so older configs using audio.chunk_size still work.
+        return self.fft_window
     
     @property
     def channels(self) -> int:
@@ -98,7 +98,23 @@ class SpectrogramConfig:
     
     @property
     def fft_window(self) -> int:
-        return self.config["spectrogram"]["fft_window"]
+        spectrogram_window = self.config["spectrogram"].get("fft_window")
+        legacy_chunk_size = self.config.get("audio", {}).get("chunk_size")
+
+        if spectrogram_window is None and legacy_chunk_size is not None:
+            return int(legacy_chunk_size)
+
+        if (
+            spectrogram_window is not None
+            and legacy_chunk_size is not None
+            and int(spectrogram_window) != int(legacy_chunk_size)
+        ):
+            logging.warning(
+                "Both spectrogram.fft_window and legacy audio.chunk_size are set with different "
+                "values. Using spectrogram.fft_window."
+            )
+
+        return int(spectrogram_window if spectrogram_window is not None else 2048)
     
     @property
     def hop_length(self) -> int:
@@ -111,6 +127,31 @@ class SpectrogramConfig:
     @property
     def frequency_limit(self) -> int:
         return self.config["spectrogram"].get("frequency_limit", self.sample_rate // 2)
+
+    @property
+    def nyquist_hz(self) -> float:
+        return self.sample_rate / 2.0
+
+    @property
+    def effective_frequency_limit(self) -> float:
+        return min(float(self.frequency_limit), self.nyquist_hz)
+
+    @property
+    def frequency_resolution_hz(self) -> float:
+        return self.sample_rate / float(self.fft_window)
+
+    @property
+    def window_duration_s(self) -> float:
+        return self.fft_window / float(self.sample_rate)
+
+    @property
+    def hop_duration_s(self) -> float:
+        return self.hop_length / float(self.sample_rate)
+
+    @property
+    def visible_frequency_bins(self) -> int:
+        freqs = np.fft.rfftfreq(self.fft_window, 1.0 / self.sample_rate)
+        return int(np.count_nonzero(freqs <= self.effective_frequency_limit))
     
     @property
     def refresh_rate(self) -> float:
@@ -527,10 +568,22 @@ Examples:
     print("=" * 50)
     print("Audio Spectrogram Configuration:")
     print(f"  Sample Rate: {config.sample_rate} Hz")
-    print(f"  Chunk Size: {config.chunk_size}")
-    print(f"  FFT Window: {config.fft_window}")
+    print(f"  FFT / Stream Window: {config.fft_window}")
     print(f"  Hop Length: {config.hop_length}")
     print(f"  Window Function: {config.window_function}")
+    print(f"  Display Frequency Limit: {config.frequency_limit} Hz")
+    print("-" * 50)
+    print("FFT / Display Resolution:")
+    print(f"  Nyquist Frequency: {config.nyquist_hz:.2f} Hz")
+    print(f"  FFT Bin Spacing: {config.frequency_resolution_hz:.4f} Hz/bin")
+    print(f"  FFT Window Duration: {config.window_duration_s:.4f} s")
+    print(f"  Spectrogram Time Step (hop): {config.hop_duration_s:.4f} s")
+    print(f"  Effective Display Limit: {config.effective_frequency_limit:.2f} Hz")
+    print(f"  Visible FFT Bins: {config.visible_frequency_bins}")
+    print(
+        "  Note: lowering frequency_limit zooms into fewer bins for easier inspection, "
+        "but the true frequency resolution stays fixed at sample_rate / fft_window."
+    )
     print("=" * 50)
     
     spectrogram = AudioSpectrogram(config)

@@ -1,21 +1,153 @@
 # Audio Spectrogram Configuration
+#
+# This file controls how audio is captured and how the two visualizations are drawn:
+# 1. Spectrogram: history of FFT slices over time.
+# 2. FFT figure: current FFT magnitude, smoothed FFT magnitude, and peak marker.
+#
+# Practical guide:
+# - A larger fft_window improves frequency detail but reacts more slowly in time.
+# - A smaller fft_window reacts faster but separates nearby tones less precisely.
+# - frequency_limit does NOT improve the true FFT resolution by itself.
+#   It only limits the displayed band, so the same FFT bins are shown in a narrower range.
+# - True frequency resolution is:
+#     frequency_resolution_hz = sample_rate / fft_window
+# - Visible bins in the plots are approximately:
+#     visible_bins ~= floor(frequency_limit / frequency_resolution_hz) + 1
+# - Example with sample_rate=44100 and fft_window=32768:
+#     resolution ~= 1.35 Hz/bin
+#   If frequency_limit=8000, the plots show only the bins from 0 to 8000 Hz,
+#   which makes low and mid frequencies easier to inspect visually.
+
 audio:
-  sample_rate: 44100          # Standard CD quality sample rate
-  chunk_size: 32768            # Samples per buffer (also used as FFT window size)
-  channels: 1                 # Mono input
-  dtype: "int16"              # Standard bit depth (16-bit)
+  # sample_rate:
+  #   Audio capture rate in samples per second.
+  #   Typical values: 8000, 16000, 22050, 44100 (Default), 48000.
+  #   Higher values increase the maximum measurable frequency (Nyquist = sample_rate / 2).
+  #   Visual effect:
+  #   - Higher sample_rate lets you inspect higher frequencies.
+  #   - For a fixed fft_window, higher sample_rate makes each FFT bin wider in Hz
+  #     (lower frequency detail unless you also increase fft_window).
+  sample_rate: 8000
+
+  # channels:
+  #   Number of channels requested from the input device.
+  #   Typical values: 1(Default) or 2.
+  #   Current app behavior:
+  #   - If channels > 1, the signal is mixed down to mono before plotting.
+  #   Visual effect:
+  #   - Usually none in layout; it only changes how the source signal is combined.
+  channels: 1
+
+  # dtype:
+  #   Sample format requested from the audio interface.
+  #   Typical values supported by sounddevice include:
+  #   - "int16" (Default)
+  #   - "int32"
+  #   - "float32"
+  #   Visual effect:
+  #   - Mostly affects capture precision and amplitude scale.
+  #   - "int16" is a practical default for microphones and keeps the waveform scale familiar.
+  dtype: "int16"
 
 spectrogram:
-  fft_window: 32768            # Window size for FFT analysis
-  hop_length: 512             # Overlap between windows (fft_window // 4)
-  window_function: "hann"     # Hann window by default
-  frequency_limit: 1000      # Max frequency to display (sample_rate / 2)
-  
+  # fft_window:
+  #   Main analysis size in samples.
+  #   This is both:
+  #   - the audio block size captured per callback
+  #   - the FFT window size used for the spectrogram and FFT plot
+  #   Recommended values: powers of two such as 1024, 2048 (Default), 4096, 8192, 16384, 32768.
+  #   Visual effect:
+  #   - Larger values:
+  #     better frequency resolution, smoother and more precise peaks in frequency,
+  #     but slower temporal response and longer latency.
+  #   - Smaller values:
+  #     faster response and better time localization,
+  #     but blurrier frequency separation between nearby tones.
+  #   Key formulas:
+  #   - frequency_resolution_hz = sample_rate / fft_window
+  #   - window_duration_s = fft_window / sample_rate
+  fft_window: 16384
+
+  # hop_length:
+  #   Intended horizontal time step between consecutive FFT slices.
+  #   Typical values: fft_window / 2, fft_window / 4, fft_window / 8.
+  #   Visual effect:
+  #   - Smaller hop_length means more overlap, denser time sampling, and smoother motion.
+  #   - Larger hop_length means less overlap and coarser time updates.
+  #   Note:
+  #   - In the current implementation the stream callback still arrives in full fft_window blocks,
+  #     so this value mainly documents the desired spectrogram time step and is reported in console.
+  hop_length: 512
+
+  # window_function:
+  #   Taper applied before the FFT to reduce spectral leakage.
+  #   Allowed values in this app:
+  #   - "hann" (Default)
+  #   - "hamming"
+  #   - "blackman"
+  #   - "bartlett"
+  #   Visual effect:
+  #   - "hann": balanced default, good general-purpose leakage control.
+  #   - "hamming": similar to Hann, slightly different sidelobe tradeoff.
+  #   - "blackman": stronger leakage reduction, wider main lobe, peaks look broader.
+  #   - "bartlett": triangular window, simpler and usually less selective than Hann/Blackman.
+  window_function: "hann"
+
+  # frequency_limit:
+  #   Upper frequency shown in the spectrogram and FFT magnitude figure.
+  #   Valid practical range: > 0 and <= sample_rate / 2. (Default must be 22050 or less for sample_rate=44100)
+  #   If you set a value above Nyquist, the plots will effectively stop at Nyquist.
+  #   Visual effect:
+  #   - Lower values zoom the plots into low frequencies and reduce the number of visible FFT bins.
+  #   - Higher values show a wider band up to Nyquist.
+  #   Important:
+  #   - This changes the displayed range, not the true FFT resolution.
+  #   - The real resolution still depends on fft_window.
+  #   - Lowering frequency_limit can make the same bins easier to read visually
+  #     because the figure focuses on a narrower band.
+  frequency_limit: 8000
+
 plot:
-  refresh_rate: 30            # Frames per second for the plot
-  colormap: "viridis"         # Color scheme for spectrogram
-  colorbar: true              # Show amplitude colorbar
+  # refresh_rate:
+  #   Plot redraw rate in frames per second.
+  #   Typical values: 10 to 60.
+  #   Visual effect:
+  #   - Higher values feel more responsive but consume more CPU/GPU.
+  #   - Lower values reduce load but make the UI update less often.
+  refresh_rate: 30
+
+  # colormap:
+  #   Matplotlib colormap used by the spectrogram image.
+  #   Typical values:
+  #   - "viridis" (Default)
+  #   - "plasma"
+  #   - "inferno"
+  #   - "magma"
+  #   - "cividis"
+  #   Visual effect:
+  #   - Changes only the color encoding of amplitude in the spectrogram.
+  colormap: "viridis"
+
+  # colorbar:
+  #   Whether to show the amplitude color scale next to the spectrogram.
+  #   Allowed values: true, false
+  #   Visual effect:
+  #   - true: easier to interpret amplitude levels in dB.(Default)
+  #   - false: cleaner layout with a bit more room for the plot itself.
+  colorbar: true
+
+  # title:
+  #   Main window title text.
+  #   Visual effect:
+  #   - Cosmetic only; does not affect signal processing.
   title: "Real-time Audio Spectrogram"
 
 plotfft:
-  alpha: 0.1                  # Exponential smoothing factor for the FFT magnitude plot
+  # alpha:
+  #   Exponential smoothing factor for the FFT magnitude curve.
+  #   Valid range in this app: 0 < alpha <= 1
+  #   Visual effect:
+  #   - alpha near 1.0: the smoothed curve follows the current FFT almost immediately.
+  #   - alpha near 0.1: slower, steadier curve that highlights trends. (Default)
+  #   - alpha very small: strong smoothing, but peaks may lag behind fast changes.
+  alpha: 0.05

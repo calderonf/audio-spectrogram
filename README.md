@@ -44,10 +44,9 @@ Edit `config.yaml` to customize the spectrogram behavior:
 | Section | Parameter | Description |
 |---------|-----------|-------------|
 | audio | sample_rate | Sample rate in Hz (default: 44100) |
-| audio | chunk_size | Buffer size in samples |
 | audio | channels | Number of input channels (1 = mono) |
 | audio | dtype | Audio data type (default: int16) |
-| spectrogram | fft_window | FFT window size in samples |
+| spectrogram | fft_window | Stream block size and FFT window size in samples |
 | spectrogram | hop_length | Hop length for STFT overlap |
 | spectrogram | window_function | Window type: hann, hamming, blackman, bartlett |
 | spectrogram | frequency_limit | Upper frequency limit used by the spectrogram and FFT magnitude plot |
@@ -57,6 +56,7 @@ Edit `config.yaml` to customize the spectrogram behavior:
 | plotfft | alpha | Exponential smoothing factor for the FFT magnitude view (recommended starting value: 0.1) |
 
 The FFT magnitude figure uses `spectrogram.frequency_limit` to limit the displayed frequency range and `plotfft.alpha` to smooth the FFT curve over time.
+`spectrogram.fft_window` is now the single source of truth for both the audio block size and the FFT analysis window. Older configs that still use `audio.chunk_size` remain supported as a legacy alias.
 
 ## Usage
 
